@@ -6,6 +6,8 @@ Http-to-socks5 proxy router.
 
 This app serves a HTTP proxy, forward the connection to a socks5 proxy, direct connection or block, depends on your config.
 
+You can download the prebuilt binaries for macOS, Linux and Windows in [github release](https://github.com/Jason5Lee/h2sr/releases).
+
 ## Usage
 
 ```
