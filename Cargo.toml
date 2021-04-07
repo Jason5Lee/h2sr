@@ -4,7 +4,7 @@ version = "0.1.1"
 authors = ["jasondhli <jasondhli@tencent.com>"]
 edition = "2018"
 license = "	Apache-2.0"
-description = "http-to-socks5 proxy router"
+description = "Http-to-socks5 proxy router"
 repository = "https://github.com/Jason5Lee/h2sr"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -12,7 +12,7 @@ repository = "https://github.com/Jason5Lee/h2sr"
 [dependencies]
 hyper = { version = "0.14", features = ["full"] }
 futures-util = "0.3"
-tokio = { version = "1.3", features = ["full"] }
+tokio = { version = "1.4", features = ["full"] }
 http = "0.2"
 tokio-socks = "0.5"
 anyhow = "1.0"
@@ -22,3 +22,5 @@ serde = { version = "1.0", features = ["derive"] }
 toml = "0.5"
 iprange = "0.6"
 ipnet = "2.3"
+ansi_term = "0.12"
+fdlimit = "0.2"

@@ -1,0 +1,58 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - "*.*.*"
+
+jobs:
+  release:
+    name: Release on ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        platform: [macos-x86_64, linux-x86_64, windows-x86_64]
+        include:
+          - platform: macos-x86_64
+            target: x86_64-apple-darwin
+            os: macos-latest
+            bin: h2sr
+
+          - platform: linux-x86_64
+            target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            bin: h2sr
+          
+          - platform: windows-x86_64
+            target: x86_64-windows-msvc
+            os: windows-latest
+            bin: h2sr.exe
+
+    steps:
+      - name: Install toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+
+      - name: Checkout code
+        uses: actions/checkout@v1
+
+      - name: Run code build
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --locked --release --target ${{ matrix.target }}
+
+      - name: Prepare assets
+        shell: bash
+        run: |
+          cd target/${{ matrix.target }}/release
+          strip ${{ matrix.bin }}
+          tar czvf h2sr-${{ matrix.platform }}.tar.gz ${{ matrix.bin }}
+      - name: Release assets
+        uses: softprops/action-gh-release@v1
+        with:
+          files: target/${{ matrix.target }}/release/h2sr-${{ matrix.platform }}.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
