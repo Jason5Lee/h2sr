@@ -24,7 +24,7 @@ jobs:
             bin: h2sr
           
           - platform: windows-x86_64
-            target: x86_64-windows-msvc
+            target: x86_64-pc-windows-msvc
             os: windows-latest
             bin: h2sr.exe
 
@@ -55,4 +55,4 @@ jobs:
         with:
           files: target/${{ matrix.target }}/release/h2sr-${{ matrix.platform }}.tar.gz
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
