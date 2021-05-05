@@ -10,34 +10,42 @@ You can download the prebuilt binaries for macOS, Linux and Windows in [github r
 
 ## Usage
 
-```
-h2sr 0.1.1
-Http-to-socks5 proxy router
+Put the configuration file at `$HOME/.h2sr/config.toml` . 
 
-USAGE:
-    h2sr [OPTIONS]
-
-FLAGS:
-    -h, --help       Prints help information
-    -V, --version    Prints version information
-
-OPTIONS:
-    -c, --config <PATH>    The config file path, if it isn't present, the program will find ".h2sr.toml" in the user
-                           directory
-```
+Optionally put the [`geoip.dat`](https://github.com/v2fly/geoip/releases) file at `$HOME/.h2sr/geoip.dat` .
 
 ## Config file format
 
 ```toml
 listen = "127.0.0.1:8080" # Address the http proxy listen to.
 socks5addr = "127.0.0.1:1086" # Address of the socks5 proxy.
-proxy = [
-  "the.domain.suffix.you.want.to.be.proxied.com",
-  "3.3.3.3/24" # CIDR ipv4 range
+proxydomains = [
+  "the.domain.suffix.you.want.to.connect.through.proxy.com",
 ]
-block = [
+proxyips = [
+  "3.3.3.3/24", # CIDR ipv4 range
+  "geo:us", # IP location, requires `geoip.dat`.
+]
+
+# Only one of proxydomains and directdomains can be set.
+directdomains = [
+  "the.domain.suffix.you.want.to.connect.directly.com",
+]
+# Only one of proxyips and directips can be set.
+directips = [
+  "3.3.3.3/24", # CIDR ipv4 range
+  "geo:private", # IP location, requires `geoip.dat`.
+]
+blockdomains = [
   "the.domain.suffix.you.want.to.be.blocked.com",
-  "3.4.3.3/24" # CIDR ip range
+]
+blockips = [
+  "3.4.3.3/24", # CIDR ip range
 ]
 
 ```
+
+## Update in 0.2.0
+
+- More flexible rule.
+- geoip.dat supports.

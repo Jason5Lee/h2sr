@@ -1,6 +1,9 @@
+pub mod ipgeo;
+
+use core::str;
 use ipnet::{IpNet, Ipv4Net, Ipv6Net};
 use iprange::IpRange;
-use std::{borrow::Borrow, net::IpAddr};
+use std::net::IpAddr;
 
 const NUM_ALPHABET: usize = 26;
 const NUM_DIGIT: usize = 10;
@@ -12,12 +15,16 @@ use std::usize;
 const MATCHED: usize = usize::MAX;
 const NOT_MATCHED: usize = usize::MAX - 1;
 
-pub struct Pattern {
+pub struct Domains {
     // usize::MAX -> matched
     // usize::MAX-1 -> Not matched
     // other -> index of first child, should be <= self.0.len() - NUM_CHILDREN
     // should not be empty
     host_trie: Vec<usize>,
+}
+
+#[derive(Default)]
+pub struct Ips {
     ipv4: IpRange<Ipv4Net>,
     ipv6: IpRange<Ipv6Net>,
 }
@@ -25,12 +32,14 @@ pub struct Pattern {
 #[derive(Debug)]
 pub enum Error {
     UnexpectedCharacter(u8),
+    IllegalIpNet(String),
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::UnexpectedCharacter(ch) => write!(f, "unknown character: '{:?}'", *ch as char),
+            Error::IllegalIpNet(str) => write!(f, "illegal ipnet: '{}'", str),
         }
     }
 }
@@ -39,16 +48,14 @@ impl std::error::Error for Error {}
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-impl Default for Pattern {
+impl Default for Domains {
     fn default() -> Self {
-        Pattern {
+        Domains {
             host_trie: vec![NOT_MATCHED],
-            ipv4: Default::default(),
-            ipv6: Default::default(),
         }
     }
 }
-impl Pattern {
+impl Domains {
     fn codec(ch: u8) -> Result<usize> {
         if b'A' <= ch && ch <= b'Z' {
             Ok((ch - b'A') as usize)
@@ -85,26 +92,8 @@ impl Pattern {
         Ok(())
     }
 
-    pub fn add(&mut self, host_or_ip: &str) -> Result<()> {
-        if let Ok(ipnet) = host_or_ip.parse::<IpNet>() {
-            match ipnet {
-                IpNet::V4(ipnet) => {
-                    self.ipv4.add(ipnet);
-                }
-                IpNet::V6(ipnet) => {
-                    self.ipv6.add(ipnet);
-                }
-            }
-            Ok(())
-        } else {
-            self.add_host(host_or_ip.as_bytes())
-        }
-    }
-
-    pub fn build(&mut self) {
+    fn build(&mut self) {
         self.host_trie.shrink_to_fit();
-        self.ipv4.simplify();
-        self.ipv6.simplify();
     }
 
     pub fn contain_host(&self, uri: &[u8]) -> bool {
@@ -122,21 +111,55 @@ impl Pattern {
         self.host_trie[current] == MATCHED
     }
 
-    pub fn contain_ip(&self, ip: &IpAddr) -> bool {
+    pub fn from_strs<'a>(iter: impl Iterator<Item = &'a str>) -> Result<Domains> {
+        let mut domains = Domains::default();
+
+        for s in iter {
+            domains.add_host(s.as_bytes())?
+        }
+        domains.build();
+
+        Ok(domains)
+    }
+}
+
+impl Ips {
+    fn add_ip(&mut self, ipnet: IpNet) -> Result<()> {
+        match ipnet {
+            IpNet::V4(ipnet) => {
+                self.ipv4.add(ipnet);
+            }
+            IpNet::V6(ipnet) => {
+                self.ipv6.add(ipnet);
+            }
+        }
+        Ok(())
+    }
+
+    fn build(&mut self) {
+        self.ipv4.simplify();
+        self.ipv6.simplify();
+    }
+
+    pub fn contain_ip(&self, ip: IpAddr) -> bool {
         match ip {
-            IpAddr::V4(ip) => self.ipv4.contains(ip),
-            IpAddr::V6(ip) => self.ipv6.contains(ip),
+            IpAddr::V4(ip) => self.ipv4.contains(&ip),
+            IpAddr::V6(ip) => self.ipv6.contains(&ip),
         }
     }
 
-    pub fn from_strs<'a>(iter: impl Iterator<Item = &'a str>) -> Result<Pattern> {
-        let mut pattern = Pattern::default();
+    // pub fn contain_ip(&self, ip: &IpAddr) -> bool {
 
-        for s in iter {
-            pattern.add(s.borrow())?
+    // }
+
+    pub fn from_ipnets<'a>(iter: impl Iterator<Item = IpNet>) -> Result<Ips> {
+        let mut ips = Ips::default();
+
+        for ipnet in iter {
+            ips.add_ip(ipnet)?
         }
-        pattern.build();
+        ips.build();
 
-        Ok(pattern)
+        Ok(ips)
     }
 }

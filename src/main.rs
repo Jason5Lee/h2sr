@@ -1,6 +1,15 @@
 use futures_util::future::try_join;
-use std::fs;
-use std::{convert::Infallible, fmt::Display, net::SocketAddr};
+use h2sr::ipgeo::GeoIPList;
+use ipnet::{IpNet, Ipv4Net, Ipv6Net};
+use protobuf::Message;
+use std::{
+    convert::{Infallible, TryFrom},
+    fmt::Display,
+    io::BufReader,
+    net::SocketAddr,
+    path::PathBuf,
+};
+use std::{fs, net::IpAddr};
 use tokio_socks::tcp::Socks5Stream;
 
 use hyper::{
@@ -9,14 +18,13 @@ use hyper::{
 };
 use hyper::{Body, Client, Method, Request, Response, Server};
 
+use ansi_term::Colour::{Red, Yellow};
 use anyhow::anyhow;
-use h2sr::Pattern;
+use h2sr::{Domains, Ips};
+use once_cell::unsync;
 use serde::Deserialize;
-use std::borrow::Cow;
 use std::path::Path;
 use tokio::net::{lookup_host, TcpStream};
-
-use ansi_term::Colour::Red;
 
 type HttpClient = Client<hyper::client::HttpConnector>;
 
@@ -36,14 +44,18 @@ impl Connection {
     ) -> anyhow::Result<()> {
         match self {
             Connection::Direct => {
+                println!("DIRECT: {}", auth);
                 Ok(Self::tunnel_stream(auth, upgraded, &mut TcpStream::connect(auth).await?).await)
             }
-            Connection::Socks5 => Ok(Self::tunnel_stream(
-                auth,
-                upgraded,
-                &mut *Socks5Stream::connect(socks5addr, auth).await?,
-            )
-            .await),
+            Connection::Socks5 => {
+                println!("PROXY: {}", auth);
+                Ok(Self::tunnel_stream(
+                    auth,
+                    upgraded,
+                    &mut *Socks5Stream::connect(socks5addr, auth).await?,
+                )
+                .await)
+            }
         }
     }
 
@@ -81,65 +93,192 @@ fn log_error(auth: &str, log: impl Display) {
     eprintln!("{}: {}", Red.paint("error"), log);
 }
 
-pub struct Env {
-    pub listen: SocketAddr,
-    pub socks5addr: SocketAddr,
-    pub proxy: Pattern,
-    pub block: Pattern,
+enum DomainRule {
+    Direct(Domains),
+    Proxy(Domains),
+}
+
+impl DomainRule {
+    fn get_connection(&self, uri: &[u8]) -> Option<Connection> {
+        match self {
+            DomainRule::Direct(domains) => {
+                if domains.contain_host(uri) {
+                    Some(Connection::Direct)
+                } else {
+                    None
+                }
+            }
+            DomainRule::Proxy(domains) => {
+                if domains.contain_host(uri) {
+                    Some(Connection::Socks5)
+                } else {
+                    None
+                }
+            }
+        }
+    }
+}
+
+enum IpRule {
+    Direct(Ips),
+    Proxy(Ips),
+}
+
+impl IpRule {
+    fn get_connection(&self, ip: IpAddr) -> Connection {
+        match self {
+            IpRule::Direct(ips) => {
+                if ips.contain_ip(ip) {
+                    Connection::Direct
+                } else {
+                    Connection::Socks5
+                }
+            }
+            IpRule::Proxy(ips) => {
+                if ips.contain_ip(ip) {
+                    Connection::Socks5
+                } else {
+                    Connection::Direct
+                }
+            }
+        }
+    }
+}
+struct Env {
+    listen: SocketAddr,
+    socks5addr: SocketAddr,
+    blockdomains: Domains,
+    blockips: Ips,
+    domain_rule: DomainRule,
+    ip_rule: IpRule,
 }
 
 #[derive(Deserialize)]
-pub struct Config {
-    pub listen: SocketAddr,
-    pub socks5addr: SocketAddr,
-    pub proxy: Vec<String>,
-    pub block: Vec<String>,
+struct Config {
+    listen: SocketAddr,
+    socks5addr: SocketAddr,
+    proxydomains: Option<Vec<String>>,
+    proxyips: Option<Vec<String>>,
+    directdomains: Option<Vec<String>>,
+    directips: Option<Vec<String>>,
+    #[serde(default = "Vec::new")]
+    blockips: Vec<String>,
+    #[serde(default = "Vec::new")]
+    blockdomains: Vec<String>,
 }
 
-async fn load_env() -> Env {
-    let matches = clap::App::new("h2sr")
-        // .author("Jason5Lee <jason5lee@hotmail.com>")
-        .about("Http-to-socks5 proxy router")
-        .version("0.1.1")
-        .arg(
-            clap::Arg::with_name("config")
-                .short("c")
-                .long("config")
-                .value_name("PATH")
-                .help("The config file path, if it isn't present, the program will find \".h2sr.toml\" in the user directory")
-                .takes_value(true),
-        )
-        .get_matches();
+const ILLEGAL_CIDR: &'static str = "illegal CIDR";
+fn cidr_to_ipnet(cider: &h2sr::ipgeo::CIDR) -> IpNet {
+    let ip = cider.get_ip();
+    let prefix = cider.get_prefix() as u8;
+    if let Ok(ipv6_bytes) = <[u8; 16]>::try_from(ip) {
+        IpNet::V6(Ipv6Net::new(ipv6_bytes.into(), prefix).expect(ILLEGAL_CIDR))
+    } else if let Ok(ipv4_bytes) = <[u8; 4]>::try_from(ip) {
+        IpNet::V4(Ipv4Net::new(ipv4_bytes.into(), prefix).expect(ILLEGAL_CIDR))
+    } else {
+        panic!("{}", ILLEGAL_CIDR)
+    }
+}
+const GEO_PREFIX: &'static str = "geo:";
+fn to_ipnets_vec<'a, F: Fn() -> GeoIPList>(
+    ip_strings: impl Iterator<Item = &'a String>,
+    geoip_list: &unsync::Lazy<GeoIPList, F>,
+) -> Vec<IpNet> {
+    let mut result = Vec::new();
+    for ip_string in ip_strings {
+        let ip_str = ip_string.as_str();
+        if ip_str.starts_with(GEO_PREFIX) {
+            let geo = &ip_str[GEO_PREFIX.len()..];
+            let mut matched_ipnet = geoip_list
+                .get_entry()
+                .iter()
+                .filter(|geoip| geoip.get_country_code().eq_ignore_ascii_case(geo))
+                .flat_map(|geoip| geoip.get_cidr().iter().map(cidr_to_ipnet))
+                .collect::<Vec<_>>();
+            if matched_ipnet.len() == 0 {
+                println!("{}: geo `{}` not found", Yellow.paint("warning"), geo)
+            }
+            result.append(&mut matched_ipnet);
+        } else if let Ok(ipnet) = ip_str.parse::<IpNet>() {
+            result.push(ipnet)
+        } else {
+            panic!("illegal ip: `{}`", ip_str)
+        }
+    }
 
-    let config: Cow<'_, Path> = matches
-        .value_of("config")
-        .map(|path| Path::new(path).into())
-        .unwrap_or_else(|| {
-            let user_dir = directories::UserDirs::new().expect("unable to get user directory");
-            let mut path = user_dir.home_dir().to_owned();
-            path.push(".h2sr.toml");
-            path.into()
-        });
-    let config = fs::read(config).expect("unable to read config file");
+    result
+}
+fn load_geoip(geoip_path: &Path) -> GeoIPList {
+    let mut buf_reader =
+        BufReader::new(fs::File::open(geoip_path).expect("unable to open geoip.dat file"));
+    let mut proto_in = protobuf::CodedInputStream::from_buffered_reader(&mut buf_reader);
+    GeoIPList::parse_from(&mut proto_in).expect("error while parsing geoip.dat")
+}
+fn load_env() -> Env {
+    let mut h2sr_dir: PathBuf = directories::UserDirs::new()
+        .expect("unable to get user directory")
+        .home_dir()
+        .to_path_buf();
+    h2sr_dir.push(".h2sr");
 
-    let config: Config = toml::from_slice(&config).expect("config file error");
+    let config: Config = {
+        let mut path = h2sr_dir.clone();
+        path.push("config.toml");
+        path.shrink_to_fit();
+        let bytes = fs::read(path).expect("unable to read config.toml file");
+        toml::from_slice(&bytes).expect("config file error")
+    };
+    let geoip = {
+        let mut path = h2sr_dir;
+        path.push("geoip.dat");
+        path.shrink_to_fit();
+        unsync::Lazy::<GeoIPList, _>::new(move || load_geoip(&path))
+    };
 
-    let proxy =
-        Pattern::from_strs(config.proxy.iter().map(|s| &*s as &str)).expect("proxy config error");
-    let block =
-        Pattern::from_strs(config.block.iter().map(|s| &*s as &str)).expect("block config error");
+    let blockdomains = Domains::from_strs(config.blockdomains.iter().map(|v| v.as_str()))
+        .expect("error while parsing `blockdomains`");
 
+    let blockips = Ips::from_ipnets(to_ipnets_vec(config.blockips.iter(), &geoip).into_iter())
+        .expect("error while parsing `blockips`");
+
+    let domain_rule = match (config.directdomains, config.proxydomains) {
+        (Some(directdomains), None) => DomainRule::Direct(
+            Domains::from_strs(directdomains.iter().map(|s| s.as_str()))
+                .expect("error while parsing `directdomains`"),
+        ),
+        (None, Some(proxydomains)) => DomainRule::Proxy(
+            Domains::from_strs(proxydomains.iter().map(|s| s.as_str()))
+                .expect("error while parsing `proxydomains`"),
+        ),
+
+        _ => panic!("only exact one of `directdomains` and `proxydoamins` should be set"),
+    };
+
+    let ip_rule = match (config.directips, config.proxyips) {
+        (Some(directips), None) => IpRule::Direct(
+            Ips::from_ipnets(to_ipnets_vec(directips.iter(), &geoip).into_iter())
+                .expect("error while parsing `directips`"),
+        ),
+        (None, Some(proxyips)) => IpRule::Proxy(
+            Ips::from_ipnets(to_ipnets_vec(proxyips.iter(), &geoip).into_iter())
+                .expect("error while parsing `proxyips`"),
+        ),
+
+        _ => panic!("only exact one of `directips` and `proxyips` should be set"),
+    };
     Env {
         listen: config.listen,
         socks5addr: config.socks5addr,
-        proxy,
-        block,
+        blockdomains,
+        blockips,
+        domain_rule,
+        ip_rule,
     }
 }
 
 #[tokio::main]
 async fn main() {
-    let env: &'static _ = Box::leak(Box::new(load_env().await));
+    let env: &'static _ = Box::leak(Box::new(load_env()));
     fdlimit::raise_fd_limit();
     let client = HttpClient::new();
 
@@ -208,12 +347,21 @@ async fn connect(
     })?;
 
     let host = auth.host().as_bytes();
-    let connection = if env.block.contain_host(host) {
+    let connection = if let Some(ipaddr) = std::str::from_utf8(host)
+        .ok()
+        .and_then(|s| s.parse::<IpAddr>().ok())
+    {
+        if env.blockips.contain_ip(ipaddr) {
+            println!("BLOCK {}", auth);
+            return Ok(());
+        } else {
+            env.ip_rule.get_connection(ipaddr)
+        }
+    } else if env.blockdomains.contain_host(host) {
         println!("BLOCK {}", auth);
         return Ok(());
-    } else if env.proxy.contain_host(host) {
-        println!("PROXY {}", auth);
-        Connection::Socks5
+    } else if let Some(connection) = env.domain_rule.get_connection(host) {
+        connection
     } else {
         let auth = auth.as_str();
         match lookup_host(auth).await {
@@ -227,15 +375,11 @@ async fn connect(
                     ))
                 }
                 Some(ip) => {
-                    if env.block.contain_ip(&ip.ip()) {
+                    if env.blockips.contain_ip(ip.ip()) {
                         println!("BLOCK {}", auth);
                         return Ok(());
-                    } else if env.proxy.contain_ip(&ip.ip()) {
-                        println!("PROXY {}", auth);
-                        Connection::Socks5
                     } else {
-                        println!("DIRECT {}", auth);
-                        Connection::Direct
+                        env.ip_rule.get_connection(ip.ip())
                     }
                 }
             },

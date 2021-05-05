@@ -1,0 +1,23 @@
+syntax = "proto3";
+
+package me.jason5lee.h2sr;
+
+
+message GeoIPList {
+    repeated GeoIP entry = 1;
+}
+
+message GeoIP {
+    string country_code = 1;
+    repeated CIDR cidr = 2;
+    bool reverse_match = 3;
+}
+
+message CIDR {
+    // IP address, should be either 4 or 16 bytes.
+    bytes ip = 1;
+  
+    // Number of leading ones in the network mask.
+    uint32 prefix = 2;
+}
+  
