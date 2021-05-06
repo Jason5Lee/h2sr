@@ -94,7 +94,7 @@ fn log_error(auth: &str, log: impl Display) -> std::io::Result<()> {
     if !auth.is_empty() {
         write!(lock, "[{}] ", auth)?;
     }
-    lock.set_color(ColorSpec::new().set_fg(Some(Color::Red)))?;
+    lock.set_color(ColorSpec::new().set_fg(Some(Color::Red)).set_bold(true))?;
     write!(lock, "error")?;
     lock.reset()?;
     writeln!(lock, ": {}", log)
@@ -205,7 +205,7 @@ fn to_ipnets_vec<'a, F: Fn() -> GeoIPList>(
             if matched_ipnet.len() == 0 {
                 let mut stderr = StandardStream::stderr(ColorChoice::Auto);
                 (|| -> std::io::Result<()> {
-                    stderr.set_color(ColorSpec::new().set_fg(Some(Color::Yellow)))?;
+                    stderr.set_color(ColorSpec::new().set_fg(Some(Color::Yellow)).set_bold(true))?;
                     write!(stderr, "warning")?;
                     stderr.reset()?;
                     writeln!(stderr, ": geo `{}` not found", geo)
@@ -218,7 +218,7 @@ fn to_ipnets_vec<'a, F: Fn() -> GeoIPList>(
             panic!("illegal ip: `{}`", ip_str)
         }
     }
-
+    ;;
     result
 }
 fn load_geoip(geoip_path: &Path) -> GeoIPList {
