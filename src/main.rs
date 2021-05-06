@@ -2,6 +2,8 @@ use futures_util::future::try_join;
 use h2sr::ipgeo::GeoIPList;
 use ipnet::{IpNet, Ipv4Net, Ipv6Net};
 use protobuf::Message;
+use std::io::Write;
+use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
 use std::{
     convert::{Infallible, TryFrom},
     fmt::Display,
@@ -18,7 +20,6 @@ use hyper::{
 };
 use hyper::{Body, Client, Method, Request, Response, Server};
 
-use ansi_term::Colour::{Red, Yellow};
 use anyhow::anyhow;
 use h2sr::{Domains, Ips};
 use once_cell::unsync;
@@ -80,17 +81,23 @@ impl Connection {
                 );
             }
             Err(e) => {
-                log_error(auth, e);
+                log_error(auth, e).expect(ERROR_WHILE_LOGGING);
             }
         };
     }
 }
 
-fn log_error(auth: &str, log: impl Display) {
+const ERROR_WHILE_LOGGING: &'static str = "error while logging";
+fn log_error(auth: &str, log: impl Display) -> std::io::Result<()> {
+    let stderr = StandardStream::stderr(ColorChoice::Auto);
+    let mut lock = stderr.lock();
     if !auth.is_empty() {
-        eprint!("[{}] ", auth);
+        write!(lock, "[{}] ", auth)?;
     }
-    eprintln!("{}: {}", Red.paint("error"), log);
+    lock.set_color(ColorSpec::new().set_fg(Some(Color::Red)))?;
+    write!(lock, "error")?;
+    lock.reset()?;
+    writeln!(lock, ": {}", log)
 }
 
 enum DomainRule {
@@ -196,7 +203,13 @@ fn to_ipnets_vec<'a, F: Fn() -> GeoIPList>(
                 .flat_map(|geoip| geoip.get_cidr().iter().map(cidr_to_ipnet))
                 .collect::<Vec<_>>();
             if matched_ipnet.len() == 0 {
-                println!("{}: geo `{}` not found", Yellow.paint("warning"), geo)
+                let mut stderr = StandardStream::stderr(ColorChoice::Auto);
+                (|| -> std::io::Result<()> {
+                    stderr.set_color(ColorSpec::new().set_fg(Some(Color::Yellow)))?;
+                    write!(stderr, "warning")?;
+                    stderr.reset()?;
+                    writeln!(stderr, ": geo `{}` not found", geo)
+                })().expect(ERROR_WHILE_LOGGING);
             }
             result.append(&mut matched_ipnet);
         } else if let Ok(ipnet) = ip_str.parse::<IpNet>() {
@@ -293,6 +306,7 @@ async fn main() {
 
     if let Err(e) = server.await {
         log_error("", e)
+            .expect(ERROR_WHILE_LOGGING);
     }
 }
 
@@ -321,7 +335,7 @@ async fn proxy(
             Ok(()) => Ok(Response::new(Body::empty())),
             Err((code, auth, err)) => {
                 let err = err.to_string();
-                log_error(&auth, &err);
+                log_error(&auth, &err).expect(ERROR_WHILE_LOGGING);
                 Ok(Response::builder()
                     .status(code)
                     .body(err.into())
@@ -392,10 +406,10 @@ async fn connect(
         match hyper::upgrade::on(req).await {
             Ok(upgraded) => {
                 if let Err(e) = connection.tunnel(&auth, upgraded, socks5).await {
-                    log_error(&auth, e);
+                    log_error(&auth, e).expect(ERROR_WHILE_LOGGING);
                 };
             }
-            Err(e) => log_error(&auth, e),
+            Err(e) => log_error(&auth, e).expect(ERROR_WHILE_LOGGING),
         }
     });
     Ok(())
