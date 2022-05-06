@@ -6,7 +6,8 @@ pub struct AcMatcher {
 
 impl AcMatcher {
     pub fn new<B: AsRef<[u8]>>(proxy: &[B]) -> Self {
-        let patterns = proxy.iter()
+        let patterns = proxy
+            .iter()
             .map(|s| s.as_ref().iter().copied().rev().collect::<Vec<u8>>())
             .collect::<Vec<_>>();
 
@@ -15,7 +16,7 @@ impl AcMatcher {
                 .auto_configure(&patterns)
                 .anchored(true)
                 .build_with_size(&patterns)
-                .expect("WTF")
+                .expect("WTF"),
         }
     }
 
@@ -23,7 +24,7 @@ impl AcMatcher {
         let match_domain = domain.iter().copied().rev().collect::<Vec<u8>>();
         for m in self.ac.find_overlapping_iter(&match_domain) {
             if m.end() >= match_domain.len() || match_domain[m.end()] == b'.' {
-                return true
+                return true;
             }
         }
         false
@@ -56,7 +57,7 @@ impl RegexMatcher {
         pattern.push_str(")$");
 
         Self {
-            reg: regex::bytes::Regex::new(&pattern).unwrap()
+            reg: regex::bytes::Regex::new(&pattern).unwrap(),
         }
     }
 
@@ -206,6 +207,9 @@ pub mod new_domains {
             for &b in suffix.iter().rev() {
                 let child = match self.host_trie[current] {
                     MATCHED => {
+                        if b == b'.' {
+                            return;
+                        }
                         let child = self.host_trie.len();
                         self.host_trie
                             .extend(std::iter::repeat(NOT_MATCHED).take(NUM_CHILDREN));
@@ -214,7 +218,7 @@ pub mod new_domains {
                         }
                         self.host_trie[current] = child + NOT_MATCHED;
                         child
-                    },
+                    }
                     NOT_MATCHED => {
                         let child = self.host_trie.len();
                         self.host_trie
@@ -225,7 +229,13 @@ pub mod new_domains {
                         self.host_trie[current] = child;
                         child
                     }
-                    child => if child > NOT_MATCHED { child - NOT_MATCHED } else { child },
+                    child => {
+                        if child > NOT_MATCHED {
+                            child - NOT_MATCHED
+                        } else {
+                            child
+                        }
+                    }
                 };
                 current = child + Self::codec(b).unwrap();
             }
@@ -247,13 +257,20 @@ pub mod new_domains {
             for &b in uri.iter().rev() {
                 let child = self.host_trie[current];
                 if child > NOT_MATCHED && b == b'.' {
-                    return true
+                    return true;
                 }
                 if child == NOT_MATCHED || child == MATCHED {
-                    return false
+                    return false;
                 }
                 match Self::codec(b) {
-                    Some(n) => current = n + (if child > NOT_MATCHED { child - NOT_MATCHED } else { child }),
+                    Some(n) => {
+                        current = n
+                            + (if child > NOT_MATCHED {
+                                child - NOT_MATCHED
+                            } else {
+                                child
+                            })
+                    }
                     None => return false,
                 }
             }
@@ -274,29 +291,29 @@ pub mod new_domains {
 }
 pub type NewDomains = new_domains::Domains;
 
-
 #[cfg(test)]
 mod tests {
-    use crate::{AcMatcher, RegexMatcher, NewDomains};
+    use crate::{AcMatcher, NewDomains, RegexMatcher};
 
-    const PROXY: &[&str] = &[
-        "google.com",
-        "google.com",
-        "testgoogle.com",
-    ];
+    const PROXY: &[&str] = &["google.com", "google.com", "testgoogle.com", "test.google.com"];
     const TEST_CASES: &[(&[u8], bool)] = &[
         (b"google.com", true),
         (b"testgoogle.com", true),
         (b"baidu.com", false),
         (b"microsoftgoogle.com", false),
-        (b"test.google.com", true),
+        (b"something.google.com", true),
     ];
     #[test]
     fn ac_matcher_works() {
         let matcher = AcMatcher::new(PROXY);
 
         for (domain, expect) in TEST_CASES.iter().copied() {
-            assert_eq!(expect, matcher.mat(domain), "{}", String::from_utf8_lossy(domain))
+            assert_eq!(
+                expect,
+                matcher.mat(domain),
+                "{}",
+                String::from_utf8_lossy(domain)
+            )
         }
     }
     #[test]
@@ -304,7 +321,12 @@ mod tests {
         let matcher = RegexMatcher::new(PROXY);
 
         for (domain, expect) in TEST_CASES.iter().copied() {
-            assert_eq!(expect, matcher.mat(domain), "{}", String::from_utf8_lossy(domain))
+            assert_eq!(
+                expect,
+                matcher.mat(domain),
+                "{}",
+                String::from_utf8_lossy(domain)
+            )
         }
     }
     #[test]
@@ -312,7 +334,12 @@ mod tests {
         let matcher = NewDomains::new(PROXY.iter());
 
         for (domain, expect) in TEST_CASES.iter().copied() {
-            assert_eq!(expect, matcher.mat(domain), "{}", String::from_utf8_lossy(domain))
+            assert_eq!(
+                expect,
+                matcher.mat(domain),
+                "{}",
+                String::from_utf8_lossy(domain)
+            )
         }
     }
 }

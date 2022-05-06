@@ -7058,5 +7058,4 @@ pub const PROXY: &[&str] = &[
     "zynaima.com",
     "zyzc9.com",
     "zzcartoon.com",
-    
 ];
