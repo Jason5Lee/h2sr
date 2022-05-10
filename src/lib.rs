@@ -9,11 +9,10 @@ const NUM_ALPHABET: usize = 26;
 const NUM_DIGIT: usize = 10;
 const NUM_SPECIAL: usize = 2; // `.`, `-`
 const NUM_CHILDREN: usize = NUM_ALPHABET + NUM_DIGIT + NUM_SPECIAL;
-use std::fmt;
-use std::usize;
+use std::{usize, fmt};
 
 const MATCHED: usize = usize::MAX;
-const NOT_MATCHED: usize = usize::MAX - 1;
+const NOT_MATCHED: usize = usize::MAX / 2 + 1;
 
 pub struct Domains {
     // usize::MAX -> matched
@@ -22,31 +21,6 @@ pub struct Domains {
     // should not be empty
     host_trie: Vec<usize>,
 }
-
-#[derive(Default)]
-pub struct Ips {
-    ipv4: IpRange<Ipv4Net>,
-    ipv6: IpRange<Ipv6Net>,
-}
-
-#[derive(Debug)]
-pub enum Error {
-    UnexpectedCharacter(u8),
-    IllegalIpNet(String),
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Error::UnexpectedCharacter(ch) => write!(f, "unknown character: '{:?}'", *ch as char),
-            Error::IllegalIpNet(str) => write!(f, "illegal ipnet: '{}'", str),
-        }
-    }
-}
-
-impl std::error::Error for Error {}
-
-pub type Result<T> = std::result::Result<T, Error>;
 
 impl Default for Domains {
     fn default() -> Self {
@@ -72,56 +46,112 @@ impl Domains {
         }
     }
 
-    fn add_host(&mut self, suffix: &[u8]) -> Result<()> {
+    pub fn add_host(&mut self, suffix: &[u8]) -> Result<()> {
         let mut current = 0;
         for &b in suffix.iter().rev() {
             let child = match self.host_trie[current] {
-                MATCHED => return Ok(()),
-                NOT_MATCHED => {
+                MATCHED => {
+                    if b == b'.' {
+                        return Ok(());
+                    }
                     let child = self.host_trie.len();
+                    if child >= MATCHED - NOT_MATCHED {
+                        return Err(Error::TooManyDomains)
+                    }
                     self.host_trie
                         .extend(std::iter::repeat(NOT_MATCHED).take(NUM_CHILDREN));
+
+                    self.host_trie[current] = child + NOT_MATCHED;
+                    child
+                }
+                NOT_MATCHED => {
+                    let child = self.host_trie.len();
+                    if child >= NOT_MATCHED {
+                        return Err(Error::TooManyDomains)
+                    }
+                    self.host_trie
+                        .extend(std::iter::repeat(NOT_MATCHED).take(NUM_CHILDREN));
+
                     self.host_trie[current] = child;
                     child
                 }
-                child => child,
+                child => {
+                    if child > NOT_MATCHED {
+                        child - NOT_MATCHED
+                    } else {
+                        child
+                    }
+                }
             };
-            current = child + Self::codec(b)?;
+            current = child + Self::codec(b).unwrap();
         }
-        self.host_trie[current] = MATCHED;
+        if self.host_trie[current] == NOT_MATCHED {
+            self.host_trie[current] = MATCHED
+        } else {
+            if self.host_trie[current] < NOT_MATCHED {
+                self.host_trie[current] += NOT_MATCHED
+            }
+        }
         Ok(())
     }
 
-    fn build(&mut self) {
+    pub fn build(&mut self) {
         self.host_trie.shrink_to_fit();
     }
 
     pub fn contain_host(&self, uri: &[u8]) -> bool {
         let mut current = 0usize;
         for &b in uri.iter().rev() {
-            match self.host_trie[current] {
-                MATCHED => return true,
-                NOT_MATCHED => return false,
-                child => match Self::codec(b) {
-                    Ok(n) => current = child + n,
-                    Err(_) => return false,
-                },
+            let child = self.host_trie[current];
+            if child > NOT_MATCHED && b == b'.' {
+                return true;
+            }
+            if child == NOT_MATCHED || child == MATCHED {
+                return false;
+            }
+            match Self::codec(b) {
+                Ok(n) => {
+                    current = n
+                        + (if child > NOT_MATCHED {
+                            child - NOT_MATCHED
+                        } else {
+                            child
+                        })
+                }
+                Err(_) => return false,
             }
         }
-        self.host_trie[current] == MATCHED
-    }
-
-    pub fn from_strs<'a>(iter: impl Iterator<Item = &'a str>) -> Result<Domains> {
-        let mut domains = Domains::default();
-
-        for s in iter {
-            domains.add_host(s.as_bytes())?
-        }
-        domains.build();
-
-        Ok(domains)
+        self.host_trie[current] > NOT_MATCHED
     }
 }
+
+#[derive(Default)]
+pub struct Ips {
+    ipv4: IpRange<Ipv4Net>,
+    ipv6: IpRange<Ipv6Net>,
+}
+
+#[derive(Debug)]
+pub enum Error {
+    UnexpectedCharacter(u8),
+    IllegalIpNet(String),
+    TooManyDomains,
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Error::UnexpectedCharacter(ch) => write!(f, "unknown character: '{:?}'", *ch as char),
+            Error::IllegalIpNet(str) => write!(f, "illegal ipnet: '{}'", str),
+            Error::TooManyDomains => write!(f, "too many domains"),
+        }
+    }
+}
+
+impl std::error::Error for Error {}
+
+pub type Result<T> = std::result::Result<T, Error>;
+
 
 impl Ips {
     fn add_ip(&mut self, ipnet: IpNet) -> Result<()> {

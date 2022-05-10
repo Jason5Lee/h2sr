@@ -218,8 +218,17 @@ fn to_ipnets_vec<'a, F: Fn() -> GeoIPList>(
             panic!("illegal ip: `{}`", ip_str)
         }
     }
-    ;;
+    ;
     result
+}
+fn add_gfwlist()
+fn create_domains<I: Iterator>(domains: I) -> Domains where I::Item: AsRef<[u8]> {
+    let mut result = Domains::default();
+    for domain in domains {
+        if domain == b":gfwlist" {
+
+        }
+    }
 }
 fn load_geoip(geoip_path: &Path) -> GeoIPList {
     let mut buf_reader =
